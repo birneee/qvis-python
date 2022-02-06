@@ -1,5 +1,3 @@
-from typing import Optional, Iterator
-
 from qvis.ranges import Ranges
 
 
