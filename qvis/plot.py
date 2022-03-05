@@ -188,12 +188,13 @@ def plot_available_congestion_window_of_stream(ax: Axes, conn: Connection, strea
 
 
 def plot_rtt(ax: Axes, conn: Connection, color: str = '#ff9900', label: str | None = 'Latest RTT',
-             linestyle: str = 'solid'):
+             linestyle: str = 'solid', rtt_ms_step_size: float = 1):
     start = time.time()
-    ms, window = zip(*extend_time(conn, conn.rtt_updates))
+    ms, updates = zip(*extend_time(conn, conn.rtt_updates))
     seconds = list(map(lambda m: m / 1000, ms))
     seconds.append(conn.max_time / 1000)
-    ax.stairs(values=window, edges=seconds, baseline=None, color=color, label=label, linestyle=linestyle)
+    updates = list(map(lambda u: rtt_ms_step_size * round(u / rtt_ms_step_size), updates))
+    ax.stairs(values=updates, edges=seconds, baseline=None, color=color, label=label, linestyle=linestyle)
     print(f'plotted in {time.time() - start}s')
 
 
@@ -257,6 +258,14 @@ def plot_xse_data_received(ax: Axes, conn: Connection, stream_id: int, color: st
     ax.scatter(x=seconds, y=cum_lengths, s=1.5, rasterized=True, label=label, color=color)
     print(f'plotted in {time.time() - start}s')
 
+def plot_received_xse_overhead_ratio(ax: Axes, conn: Connection, stream_id: int, color: str = '#ff00c7',
+                           label: str = 'XSE overhead ratio', shift_ms: float = 0):
+    start = time.time()
+    ms, ratio = unzip(map(lambda x: (x.time, (x.raw_length - x.data_length )/ x.data_length),
+                            conn.received_xse_records(stream_id)))
+    seconds = list(map(lambda m: (m + shift_ms) / 1000, ms))
+    ax.scatter(x=seconds, y=list(ratio), s=1.5, rasterized=True, label=label, color=color)
+    print(f'plotted in {time.time() - start}s')
 
 def plot_time_to_first_byte(ax: Axes, conn: Connection, stream_id: int, color: str = 'black',
                             label: Optional[str] = 'Time to first byte'):
