@@ -312,6 +312,15 @@ class Connection:
         max_stream_data = (latest_stream_frame.offset + latest_stream_frame.length) * 8  # in bits
         return max_stream_data / duration
 
+    def avg_raw_xse_stream_receive_rate(self, stream_id) -> float:
+        """in bits per second"""
+        """the full length of the XSE-QUIC records"""
+        start_time = self.time_to_first_byte(stream_id) / 1000  # in seconds
+        stop_time = self.max_time / 1000  # in seconds
+        duration = stop_time - start_time
+        max_stream_data = sum(map(lambda x: x.raw_length, self.received_xse_records(stream_id))) * 8  # in bits
+        return max_stream_data / duration
+    
     def avg_xse_stream_receive_rate(self, stream_id) -> float:
         """in bits per second"""
         """only the payload of the XSE-QUIC records"""
