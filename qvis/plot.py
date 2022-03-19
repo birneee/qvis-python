@@ -175,13 +175,14 @@ def plot_congestion_window(ax: Axes, conn: Connection, color: str = '#8a2be2', l
 
 def plot_available_congestion_window_of_stream(ax: Axes, conn: Connection, stream_id: int, color: str = '#8a2be2',
                                                label: str | None = 'Congestion window',
-                                               linestyle: str = 'solid'):
+                                               linestyle: str = 'solid', value_multiple_of: int = 10000):
     start = time.time()
     stream = increasing_only(map(lambda s: (s.time, s.offset + s.length), conn.sent_stream_frames_of_stream(stream_id)))
     in_flight = conn.bytes_in_flight_updates
     congestion = extend_time(conn, conn.congestion_window_updates)
     available = add_updates(stream, subtract_updates(congestion, in_flight))
     ms, value = unzip(available)
+    value=list(map(lambda v: value_multiple_of * round(v/value_multiple_of), value))
     seconds = list(map(lambda m: m / 1000, ms))
     seconds.append(conn.max_time / 1000)
     ax.stairs(values=value, edges=seconds, baseline=None, color=color, label=label, linestyle=linestyle)
