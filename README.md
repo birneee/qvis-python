@@ -1,5 +1,5 @@
 # qvis-python
 
-Inspired by [qvis](https://github.com/quiclog/qvis).
+A set of QUIC visualization tools inspired by [qvis](https://github.com/quiclog/qvis).
 
 TODO
