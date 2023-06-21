@@ -1,7 +1,6 @@
-import math
 import statistics
 import time
-from typing import Iterator, Optional, TypeVar, Callable
+from typing import Iterator, Optional, TypeVar, Callable, Iterable
 
 import matplotlib.transforms as transforms
 import numpy as np
@@ -9,6 +8,12 @@ from matplotlib.axes import Axes
 from matplotlib.ticker import FuncFormatter
 
 from .connection import Connection
+from .frame import StreamFrame, AckFrame
+from .frames.datagram_frame import DatagramFrame
+from .utils.iterator import window
+from datetime import timedelta
+
+from .utils.time import print_func_time
 
 
 def byte_axis_formatter(bytes: int, position: int) -> str:
@@ -35,7 +40,7 @@ def extend_time(conn: Connection, values: Iterator[tuple[float, any]]) -> Iterat
 def increasing_only(values: Iterator[tuple[float, int]]) -> Iterator[tuple[float, int]]:
     """helper function"""
     """ignore non increasing values"""
-    max_value = 0
+    max_value = -1
     for time, value in values:
         if value > max_value:
             yield time, value
@@ -113,14 +118,25 @@ def combine_updates(combine: Callable[[int, int], int], u1: Iterator[tuple[float
 
 K = TypeVar("K")
 V = TypeVar("V")
+T = TypeVar("T")
 
 
-def unzip(it: Iterator[tuple[K, V]]) -> (tuple[K], tuple[V]):
+def unzip(it: Iterable[tuple[K, V]]) -> (tuple[K], tuple[V]):
     """helper function"""
     """unzip stream of tuples to a tuple of streams"""
     result = tuple(zip(*it))
     if len(result) == 0:
         return (), ()
+    else:
+        return result
+
+
+def unzip3(it: Iterable[tuple[K, V, T]]) -> (tuple[K], tuple[V], tuple[T]):
+    """helper function"""
+    """unzip stream of tuples to a tuple of streams"""
+    result = tuple(zip(*it))
+    if len(result) == 0:
+        return (), (), ()
     else:
         return result
 
@@ -174,6 +190,34 @@ def plot_congestion_window(ax: Axes, conn: Connection, color: str = '#8a2be2', l
               linewidth=linewidth)
     print(f'plotted in {time.time() - start}s')
 
+@print_func_time
+def plot_available_congestion_window_on_datagram(ax: Axes, conn: Connection, color: str = '#8a2be2',
+                                               label: str | None = 'Congestion window',
+                                               linestyle: str = 'solid', start_offset: int = 0, hide_if_empty: bool = True):
+    offset = start_offset
+
+    def extract(d: DatagramFrame) -> (float, int):
+        nonlocal offset
+        offset += d.length
+        return d.time_as_timedelta.total_seconds(), offset
+    sent_datagrams = conn.sent_datagram_frames()
+    updated = list(map(extract, sent_datagrams))
+    if hide_if_empty and len(updated) == 0:
+        return
+
+    plot_available_congestion_window(ax, conn, color=color, label=label, linestyle=linestyle, y_zero=updated)
+
+def plot_available_congestion_window(ax: Axes, conn: Connection, color: str = '#8a2be2',
+                                               label: str | None = 'Congestion window',
+                                               linestyle: str = 'solid', y_zero: Iterator[tuple[float, int]] = [(0,0)]):
+    stream = increasing_only(y_zero)
+    in_flight = map(lambda u: (u[0] / 1000, u[1]), conn.bytes_in_flight_updates)
+    congestion = map(lambda u: (u[0] / 1000, u[1]), conn.congestion_window_updates)
+    available = add_updates(stream, subtract_updates(congestion, in_flight))
+    seconds, value = unzip(available)
+    seconds = list(seconds)
+    seconds.append(conn.max_time / 1000)
+    ax.stairs(values=value, edges=seconds, baseline=None, color=color, label=label, linestyle=linestyle)
 
 def plot_available_congestion_window_of_stream(ax: Axes, conn: Connection, stream_id: int, color: str = '#8a2be2',
                                                label: str | None = 'Congestion window',
@@ -202,7 +246,8 @@ def plot_rtt(ax: Axes, conn: Connection, color: str = '#ff9900', label: str | No
     ms, updates = zip(*extend_time(conn, conn.rtt_updates))
     seconds = list(map(lambda m: m / 1000, ms))
     seconds.append(conn.max_time / 1000)
-    updates = list(map(lambda u: rtt_ms_step_size * round(u / rtt_ms_step_size), updates))
+    if rtt_ms_step_size != 0:
+        updates = list(map(lambda u: rtt_ms_step_size * round(u / rtt_ms_step_size), updates))
     ax.stairs(values=updates, edges=seconds, baseline=None, color=color, label=label, linestyle=linestyle,
               linewidth=linewidth)
     print(f'plotted in {time.time() - start}s')
@@ -228,14 +273,15 @@ def plot_raw_data_sent(ax: Axes, conn: Connection, color: str = '#0000ff',
     print(f'plotted in {time.time() - start}s')
 
 
+@print_func_time
 def plot_stream_data_sent(ax: Axes, conn: Connection, stream_id: int, color: str = '#0000ff',
-                          label: str = 'Stream data sent'):
-    start = time.time()
-    ms, cum_length = zip(*map(lambda f: (f.time, f.offset + f.length),
-                              conn.sent_stream_frames_of_stream(stream_id)))
-    seconds = list(map(lambda m: m / 1000, ms))
-    ax.scatter(x=seconds, y=cum_length, s=1.5, rasterized=True, label=label, color=color)
-    print(f'plotted in {time.time() - start}s')
+                          label: str = 'Sent stream payload', linewidth: float = 4, hide_if_empty: bool = True, y_offset: int = 0):
+    seconds, start_offsets, end_offsets = unzip3(map(lambda f: (f.time_as_timedelta.total_seconds(), y_offset + f.offset, y_offset + f.offset + f.length),
+             conn.sent_stream_frames_of_stream(stream_id)))
+    if hide_if_empty and len(seconds) == 0:
+        return
+    ax.vlines(x=seconds, ymin=start_offsets, ymax=end_offsets, rasterized=True, color=color, label=label,
+              linewidth=linewidth)
 
 
 def plot_received_acks_of_stream(ax: Axes, conn: Connection, stream_id: int, color: str = '#6b8e23',
@@ -248,14 +294,32 @@ def plot_received_acks_of_stream(ax: Axes, conn: Connection, stream_id: int, col
     print(f'plotted in {time.time() - start}s')
 
 
+@print_func_time
+def plot_received_ack_delay(ax: Axes, conn: Connection, stream_id: int):
+    """TODO WIP"""
+    def add_ack(sf: StreamFrame) -> (StreamFrame, AckFrame | None):
+        return sf, conn.get_first_ack_of_packet(sf.packet)
+
+    def to_plot_values(sf: StreamFrame, af: AckFrame) -> (float, float, float):
+        return sf.offset + sf.length / 2, sf.time_as_timedelta.total_seconds(), af.time_as_timedelta.total_seconds()
+
+    offsets, start_seconds, end_seconds = unzip3(
+        map(lambda t: to_plot_values(t[0], t[1]),
+            filter(lambda t: t[1] != None,
+                   map(add_ack,
+                       conn.sent_stream_frames_of_stream(stream_id)))))
+    ax.hlines(y=offsets, xmin=start_seconds, xmax=end_seconds)
+
+
+@print_func_time
 def plot_stream_data_received(ax: Axes, conn: Connection, stream_id: int, color: str = '#0000ff',
-                              label: str = 'Stream data received'):
-    start = time.time()
-    ms, cum_length = zip(*map(lambda f: (f.time, f.offset + f.length),
-                              conn.received_stream_frames_of_stream(stream_id)))
-    seconds = list(map(lambda m: m / 1000, ms))
-    ax.scatter(x=seconds, y=cum_length, s=1.5, rasterized=True, label=label, color=color)
-    print(f'plotted in {time.time() - start}s')
+                              label: str = 'Received stream payload', linewidth: float = 4, hide_if_empty: bool = True, y_offset: int = 0):
+    seconds, start_offsets, end_offsets = unzip3(map(lambda f: (f.time_as_timedelta.total_seconds(), y_offset + f.offset, y_offset + f.offset + f.length),
+             conn.received_stream_frames_of_stream(stream_id)))
+    if hide_if_empty and len(seconds) == 0:
+        return
+    ax.vlines(x=seconds, ymin=start_offsets, ymax=end_offsets, rasterized=True, color=color, label=label,
+              linewidth=linewidth)
 
 
 def plot_xse_data_received(ax: Axes, conn: Connection, stream_id: int, color: str = '#ff00c7',
@@ -286,3 +350,142 @@ def plot_time_to_first_byte(ax: Axes, conn: Connection, stream_id: int, color: s
                # path_effects=[path_effects.SimpleLineShadow(shadow_color='red', offset=(0.5, 0.5)), path_effects.Normal()],
                transform=transforms.offset_copy(ax.transData, fig=ax.figure, x=0, y=-2.5, units='points')
                )
+
+
+@print_func_time
+def plot_path_updates(ax: Axes, conn: Connection, label: str = "Path updates", linestyle: str | None = 'dashed',
+                      color: str | None = "black"):
+    path_updates = conn.path_updates
+    for i, path_update in enumerate(path_updates):
+        ax.axvline(path_update.time_as_timedelta.total_seconds(), label=label if i == 0 else None, linestyle=linestyle, color=color)
+        ax.text(path_update.time_as_timedelta.total_seconds(), 1.01, f'{path_update.dst_ip}:{path_update.dst_port}',
+                transform=ax.get_xaxis_text1_transform(0)[0], ha='center')
+
+@print_func_time
+def plot_vline_with_label(ax: Axes, time: timedelta, label: str, linestyle: str | None = 'dashed',
+                      color: str | None = "black", y: float = 1.01, ha: str = 'left', rotation: float = 70):
+    ax.axvline(time.total_seconds(), label=None, linestyle=linestyle,
+               color=color)
+    ax.text(time.total_seconds(), y, label,
+            transform=ax.get_xaxis_text1_transform(0)[0], ha=ha, rotation=rotation)
+
+@print_func_time
+def plot_datagram_data_received(ax: Axes, conn: Connection, color: str | None = None,
+                                label: str = 'Received datagram payload', linewidth: float = 4, start_offset: int = 0, hide_if_empty: bool = True):
+    offset = start_offset
+
+    def extract(d: DatagramFrame) -> (float, int, int):
+        nonlocal offset
+        offset += d.length
+        return d.time_as_timedelta.total_seconds(), offset - d.length, offset
+
+    received_datagrams = conn.received_datagram_frames()
+    seconds, start_offsets, end_offsets = unzip3(map(extract, received_datagrams))
+    if hide_if_empty and len(seconds) == 0:
+        return
+    ax.vlines(x=seconds, ymin=start_offsets, ymax=end_offsets, rasterized=True, color=color, label=label,
+              linewidth=linewidth)
+
+
+@print_func_time
+def plot_datagram_data_sent(ax: Axes, conn: Connection, color: str | None = None,
+                            label: str = 'Sent datagram payload', linewidth: float = 4, start_offset: int = 0, hide_if_empty: bool = True):
+    offset = start_offset
+
+    def extract(d: DatagramFrame) -> (float, int, int):
+        nonlocal offset
+        offset += d.length
+        return d.time_as_timedelta.total_seconds(), offset - d.length, offset
+
+    sent_datagrams = conn.sent_datagram_frames()
+    seconds, start_offsets, end_offsets = unzip3(map(extract, sent_datagrams))
+    if hide_if_empty and len(seconds) == 0:
+        return
+    ax.vlines(x=seconds, ymin=start_offsets, ymax=end_offsets, rasterized=True, color=color, label=label,
+              linewidth=linewidth)
+
+
+@print_func_time
+def plot_stream_receive_gaps(ax: Axes, conn: Connection, stream_id: int, label: str | None = "Gap in received stream",
+                             *args, **kwargs):
+    plot_stream_gaps(ax, conn.received_stream_frames_of_stream(stream_id), label=label, *args, **kwargs)
+
+
+@print_func_time
+def plot_stream_send_gaps(ax: Axes, conn: Connection, stream_id: int, label: str | None = "Gap in sent stream", *args,
+                          **kwargs):
+    plot_stream_gaps(ax, conn.sent_stream_frames_of_stream(stream_id), label=label, *args, **kwargs)
+
+
+def plot_stream_gaps(ax: Axes, stream_frames: Iterable[StreamFrame], min_time: timedelta = timedelta(0),
+                     color: str | None = 'black', label: str = 'Gap in received stream', linewidth: float = 1):
+    def has_min_time(a: StreamFrame, b: StreamFrame) -> bool:
+        return b.time_as_timedelta - a.time_as_timedelta > min_time
+
+    # def get_values(a: StreamFrame, b: StreamFrame) -> tuple[float, float, float]:
+    #     return a.offset, a.time_as_timedelta.total_seconds(), b.time_as_timedelta.total_seconds()
+
+    def get_values(a: StreamFrame, b: StreamFrame) -> tuple[float, float, float]:
+        error = (b.time_as_timedelta.total_seconds() - a.time_as_timedelta.total_seconds()) / 2
+        return a.time_as_timedelta.total_seconds() + error, a.offset, error
+
+    seconds, offsets, errors = unzip3(
+        map(lambda t: get_values(*t),
+            filter(lambda t: has_min_time(*t),
+                   window(
+                       stream_frames))))
+
+    ax.errorbar(seconds, offsets, xerr=errors, capsize=4, elinewidth=linewidth, color=color, label=label, fmt='none')
+
+    for (x, y, error) in zip(seconds, offsets, errors):
+        ms = error * 2 * 1000
+        ax.annotate(f'{ms:.2f} ms', xy=(x, y), xytext=(0, -4), textcoords='offset pixels', ha='center', va='top',
+                    color=color)
+
+
+@print_func_time
+def plot_datagram_receive_gaps(ax: Axes, conn: Connection, label: str = 'Gap in received datagrams', *args, **kwargs):
+    plot_datagram_gaps(ax, conn.received_datagram_frames(), label=label, *args, **kwargs)
+
+
+@print_func_time
+def plot_datagram_send_gaps(ax: Axes, conn: Connection, label: str = 'Gap in sent datagrams', *args, **kwargs):
+    plot_datagram_gaps(ax, conn.sent_datagram_frames(), label=label, *args, **kwargs)
+
+
+def plot_datagram_gaps(ax: Axes, datagrams: Iterable[DatagramFrame], min_time: timedelta = timedelta(0),
+                       color: str | None = 'black', label: str | None = None, linewidth: float = 1):
+    def add_offset(datagrams: Iterable[DatagramFrame]) -> Iterator[tuple[int, DatagramFrame]]:
+        offset = 0
+        for datagram in datagrams:
+            yield offset, datagram
+            offset += datagram.length
+
+    def has_min_time(a: (int, DatagramFrame), b: (int, DatagramFrame)) -> bool:
+        return b[1].time_as_timedelta - a[1].time_as_timedelta > min_time
+
+    def get_values(a: (int, DatagramFrame), b: (int, DatagramFrame)) -> tuple[float, float, float]:
+        start = a[1].time_as_timedelta.total_seconds()
+        end = b[1].time_as_timedelta.total_seconds()
+        offset = a[0]
+        error = (end - start) / 2
+        return start + error, offset, error
+
+    seconds, offsets, errors = unzip3(
+        map(lambda t: get_values(*t),
+            filter(lambda t: has_min_time(*t),
+                   window(
+                       add_offset(datagrams)))))
+
+    ax.errorbar(seconds, offsets, xerr=errors, capsize=4, elinewidth=linewidth, color=color, label=label, fmt='none')
+
+    for (x, y, error) in zip(seconds, offsets, errors):
+        ms = error * 2 * 1000
+        ax.annotate(f'{ms:.2f} ms', xy=(x, y), xytext=(0, -4), textcoords='offset pixels', ha='center', va='top',
+                    color=color)
+
+def plot_datagram_ingress_goodput(ax: Axes, client: Connection, chunk_delta: Optional[timedelta] = None):
+    """time in s, goodput in Mbps"""
+    time, goodputs = unzip(client.ingress_datagram_goodput_chunked(chunk_delta=chunk_delta))
+    seconds = [t.total_seconds() for t in time]
+    ax.plot(seconds, goodputs)

@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from qvis.ranges import Ranges
 
 
@@ -15,8 +17,12 @@ class Frame(object):
 
     @property
     def time(self) -> float:
-        """in seconds"""
+        """in ms"""
         return self.packet.time
+
+    @property
+    def time_as_timedelta(self) -> timedelta:
+        return self.packet.time_as_timedelta
 
 
 class AckFrame(Frame):

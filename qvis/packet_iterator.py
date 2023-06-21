@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Iterator, Optional
+from typing import Iterator
 
-from . import frame_types
-from .event import Event
-from .frame import Frame, StreamFrame
+from .event_iterator import EventIterator
+from .frame_iterator import FrameIterator
 
 
-class Packet:
-    event: Event
+class PacketIterator:
+    event: EventIterator
 
-    def __init__(self, event: Event):
+    def __init__(self, event: EventIterator):
         self.event = event
 
     @property
@@ -36,7 +35,7 @@ class Packet:
         return self.event.data['raw']['length']
 
     @property
-    def frames(self) -> Iterator['Frame']:
+    def frames(self) -> Iterator['FrameIterator']:
         data = self.event.data
         if data is None:
             return
@@ -44,14 +43,7 @@ class Packet:
         if frames is None:
             return
         for frame in frames:
-            yield Frame(frame, self)
+            yield FrameIterator(frame, self)
 
-    def frames_of_type(self, frame_type: str) -> Iterator['Frame']:
+    def frames_of_type(self, frame_type: str) -> Iterator['FrameIterator']:
         return filter(lambda f: f.type == frame_type, self.frames)
-
-    @property
-    def stream_frames(self) -> Iterator['StreamFrame']:
-        return map(lambda f: StreamFrame(f), self.frames_of_type(frame_types.STREAM))
-
-    def stream_frames_of_stream(self, stream_id: int) -> Iterator['StreamFrame']:
-        return filter(lambda f: f.stream_id == stream_id, self.stream_frames)

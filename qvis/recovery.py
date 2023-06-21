@@ -21,3 +21,8 @@ class MetricsUpdated:
     def latest_rtt(self) -> Optional[float]:
         """returns rtt in ms"""
         return self.event.data.get('latest_rtt')
+
+    @property
+    def min_rtt(self) -> Optional[float]:
+        """returns rtt in ms"""
+        return self.event.data.get('min_rtt')

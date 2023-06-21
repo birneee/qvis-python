@@ -1,111 +1,201 @@
 from __future__ import annotations
 
+import datetime
 import gzip
 import math
+import pathlib
 import time
-from typing import Iterator, Optional, TextIO
+from datetime import timedelta, datetime
+from pathlib import Path
+from typing import Iterator, Optional, TextIO, IO
 
+import pandas as pd
+from cysimdjson import cysimdjson
+from typing_extensions import Self
+
+import ujson
 import ujson as json
 
 from . import event_names, frame_types
+from .cache import Cache, autocache
+from .event_iterator import EventIterator
+from .frame_iterator import FrameIterator
+from .frames.datagram_frame_iterator import DatagramFrameIterator
+from .packet_iterator import PacketIterator
+from .property_memory_cache import PropertyMemoryCache
 from .event import Event, XseRecord
+from .events.recovery_packet_lost_event import RecoveryPacketLostEvent
+from .events.transport_path_updated_event import TransportPathUpdatedEvent
 from .frame import Frame, MaxStreamDataFrame, StreamFrame, AckFrame
+from .frames.datagram_frame import DatagramFrame
+from .property_memory_cache import property_memory_cache
 from .packet import Packet
 from .recovery import MetricsUpdated
+from .utils.time import print_func_time
+
+PacketOffset = int
+AckOffset = int
+LostOffset = int
+PacketNumber = int
 
 
-def read_qlog(filepath: str, shift_ms: float = 0, max_ms: float = math.inf) -> Connection:
+def read_qlog(filepath: str | pathlib.Path) -> Connection:
     start = time.time()
-    if filepath.endswith('.gz'):
-        with gzip.open(filepath) as file:
-            conn = parse_qlog(file, shift_ms, max_ms)
+    if str(filepath).endswith('.gz'):
+        file = gzip.open(filepath, "rb")
+        conn = parse_qlog(file)
     else:
-        with open(filepath) as file:
-            conn = parse_qlog(file, shift_ms, max_ms)
+        file = open(filepath, "rb")
+        conn = parse_qlog(file)
     print(f'loaded {filepath} in {time.time() - start}s')
     return conn
 
-
-def parse_qlog(reader: TextIO, shift_ms: float = 0, max_ms: float = math.inf) -> Connection:
-    qlog_info = json.loads(next(reader))
-    raw_events = []
-    sent_packet_events: list[dict] = []
-    sent_packet_numbers: dict[int, int] = {}  # packet_number, index in events
-    received_packet_events: list[dict] = []
-    received_packet_numbers: dict[int, int] = {}  # packet_number, index in events
-    for index, line in enumerate(reader):
-        event = json.loads(line)
-        if shift_ms != 0:
-            event['time'] += shift_ms
-        if event['time'] > max_ms:
-            break
-        raw_events.append(event)
-        match event['name']:
-            case event_names.TRANSPORT_PACKET_SENT:
-                sent_packet_numbers[event['data']['header']['packet_number']] = index
-                sent_packet_events.append(event)
-            case event_names.TRANSPORT_PACKET_RECEIVED:
-                packet_number: Optional[int] = event['data']['header'].get('packet_number')
-                if packet_number is not None:  # because retry packets do not have a packet_number
-                    received_packet_numbers[packet_number] = index
-                    received_packet_events.append(event)
+# TODO rename
+def parse_qlog(reader: TextIO) -> Connection:
     conn = Connection(
-        qlog_info,
-        raw_events,
-        sent_packet_numbers,
-        received_packet_numbers,
-        received_packet_events,
-        sent_packet_events
+        Cache(Path(reader.name)),
+        reader,
     )
     return conn
 
 
+
 class Connection:
     """A QLOG QUIC Connection"""
-    qlog_info: dict
-    raw_events: list[dict]
-    sent_packet_events: list[dict] = []
-    sent_packet_numbers: dict[int, int] = {}  # packet_number, index in events
-    received_packet_events: list[dict] = []
-    received_packet_numbers: dict[int, int] = {}  # packet_number, index in events
+    file_reader: TextIO
+    json_parser: cysimdjson.JSONParser
+    __cache__: Cache
+    __property_memory_cache__: PropertyMemoryCache
+    shift_ms: float
+    min_ms: float
+    max_ms: float
 
-    def __init__(self, qlog_info: dict, raw_events: list[dict], sent_packet_numbers: dict[int, int],
-                 received_packet_numbers: dict[int, int], received_packet_events: list[dict],
-                 sent_packet_events: list[dict]):
-        self.qlog_info: qlog_info
-        self.raw_events = raw_events
-        self.sent_packet_numbers = sent_packet_numbers
-        self.received_packet_numbers = received_packet_numbers
-        self.received_packet_events = received_packet_events
-        self.sent_packet_events = sent_packet_events
+
+    def __init__(self, cache: Cache, file_reader: TextIO, shift_ms: float = 0, min_ms: float = -math.inf, max_ms: float = math.inf):
+        self.__cache__ = cache
+        self.__property_memory_cache__ = PropertyMemoryCache()
+        self.file_reader = file_reader
+        self.json_parser = cysimdjson.JSONParser()
+        self.shift_ms = shift_ms
+        self.min_ms = min_ms
+        self.max_ms = max_ms
+
+    def copy(self) -> Connection:
+        c = Connection(
+            cache=self.__cache__,
+            file_reader=self.file_reader,
+            shift_ms=self.shift_ms,
+            min_ms=self.min_ms,
+            max_ms=self.max_ms,
+        )
+        c.__property_memory_cache__ = self.__property_memory_cache__
+        return c
+
+    def cut(self, start: timedelta = None, end: timedelta = None) -> Connection:
+        if start is not None:
+            self.min_ms = start.total_seconds() * 1000
+        if end is not None:
+            self.max_ms = end.total_seconds() * 1000
+        return self
 
     @property
-    def events(self) -> Iterator[Event]:
-        for raw_event in self.raw_events:
-            yield Event(raw_event)
+    def qlog_info(self) -> dict:
+        r = self.get_file_reader()
+        r.seek(0)
+        line = r.readline()
+        try:
+            return json.loads(line)
+        except ujson.JSONDecodeError:
+            raise Exception(f'failed to parse: {line}')
+
+    @property
+    def odcid(self) -> str:
+        return self.qlog_info['trace']['common_fields']['ODCID']
+
+    @property
+    def is_client(self) -> bool:
+        return self.qlog_info['trace']['vantage_point']['type'] == 'client'
 
     def events_of_type(self, name: str) -> Iterator[Event]:
         return filter(lambda e: e.name == name, self.events)
+
+    def _fast_events_of_type(self, name: str) -> Iterator[EventIterator]:
+        return filter(lambda e: e.name == name, self._fast_events)
 
     def received_xse_records(self, stream_id: int) -> Iterator[XseRecord]:
         return filter(lambda x: x.stream_id == stream_id,
                       map(lambda e: XseRecord(e),
                           self.events_of_type(event_names.TRANSPORT_XSE_RECORD_RECEIVED)))
 
+
+
     @property
     def sent_packets(self) -> Iterator[Packet]:
-        for raw_event in self.sent_packet_events:
-            yield Packet(Event(raw_event))
+        for offset in self.sent_packet_file_offsets:
+            yield Packet(self.event_from_file_offset(offset))
+
+    @property
+    @property_memory_cache
+    @autocache
+    def sent_packet_file_offsets(self) -> list[int]:
+        offsets = []
+        for offset in self.event_line_offsets:
+            event = self.event_from_file_offset(offset)
+            if event.name == event_names.TRANSPORT_PACKET_SENT:
+                offsets.append(offset)
+        return offsets
+
+    @property
+    @property_memory_cache
+    @autocache
+    def received_packet_file_offsets(self) -> list[int]:
+        offsets = []
+        for offset in self.event_line_offsets:
+            event = self._fast_event_from_file_offset(offset)
+            if event.name == event_names.TRANSPORT_PACKET_RECEIVED:
+                offsets.append(offset)
+        return offsets
+
 
     @property
     def received_packets(self) -> Iterator[Packet]:
-        for raw_event in self.received_packet_events:
-            yield Packet(Event(raw_event))
+        for offset in self.received_packet_file_offsets:
+            p = Packet(self.event_from_file_offset(offset))
+            if self.min_ms > -math.inf and p.time < self.min_ms:
+                 continue
+            if self.max_ms < math.inf and p.time > self.max_ms:
+                 continue
+            yield p
+
+    @property
+    def _fast_received_packets(self) -> Iterator[PacketIterator]:
+        for offset in self.received_packet_file_offsets:
+            p = PacketIterator(self._fast_event_from_file_offset(offset))
+            if self.min_ms > -math.inf and p.time < self.min_ms:
+                 continue
+            if self.max_ms < math.inf and p.time > self.max_ms:
+                 continue
+            yield p
 
     @property
     def received_packets_reversed(self) -> Iterator[Packet]:
-        for raw_event in reversed(self.received_packet_events):
-            yield Packet(Event(raw_event))
+        for offset in reversed(self.received_packet_file_offsets):
+            p = Packet(self.event_from_file_offset(offset))
+            if self.min_ms > -math.inf and p.time < self.min_ms:
+                continue
+            if self.max_ms < math.inf and p.time > self.max_ms:
+                continue
+            yield p
+
+    @property
+    def sent_packets_reversed(self) -> Iterator[Packet]:
+        for offset in reversed(self.sent_packet_file_offsets):
+            p = Packet(self.event_from_file_offset(offset))
+            if self.min_ms > -math.inf and p.time < self.min_ms:
+                continue
+            if self.max_ms < math.inf and p.time > self.max_ms:
+                continue
+            yield p
 
     @property
     def sent_frames(self) -> Iterator[Frame]:
@@ -130,16 +220,36 @@ class Connection:
                 yield frame
 
     @property
+    def _fast_received_frames(self) -> Iterator[FrameIterator]:
+        for packet in self._fast_received_packets:
+            for frame in packet.frames:
+                yield frame
+
+    @property
     def received_frames_reversed(self) -> Iterator[Frame]:
         for packet in self.received_packets_reversed:
             for frame in packet.frames:
                 yield frame
 
+    @property
+    def sent_frames_reversed(self) -> Iterator[Frame]:
+        for packet in self.sent_packets_reversed:
+            for frame in packet.frames:
+                yield frame
+
+
     def received_frames_of_type(self, frame_type: str) -> Iterator[Frame]:
         return filter(lambda f: f.type == frame_type, self.received_frames)
 
+    def _fast_received_frames_of_type(self, frame_type: str) -> Iterator[FrameIterator]:
+        """frame is temporary iterator"""
+        return filter(lambda f: f.type == frame_type, self._fast_received_frames)
+
     def received_frames_of_type_reversed(self, frame_type: str) -> Iterator[Frame]:
         return filter(lambda f: f.type == frame_type, self.received_frames_reversed)
+
+    def sent_frames_of_type_reversed(self, frame_type: str) -> Iterator[Frame]:
+        return filter(lambda f: f.type == frame_type, self.sent_frames_reversed)
 
     @property
     def received_stream_frames(self) -> Iterator[StreamFrame]:
@@ -149,11 +259,18 @@ class Connection:
     def received_stream_frames_reversed(self) -> Iterator[StreamFrame]:
         return map(lambda f: StreamFrame(f), self.received_frames_of_type_reversed(frame_types.STREAM))
 
+    @property
+    def sent_stream_frames_reversed(self) -> Iterator[StreamFrame]:
+        return map(lambda f: StreamFrame(f), self.sent_frames_of_type_reversed(frame_types.STREAM))
+
     def received_stream_frames_of_stream(self, stream_id: int) -> Iterator[StreamFrame]:
         return filter(lambda f: f.stream_id == stream_id, self.received_stream_frames)
 
     def received_stream_frames_of_stream_reversed(self, stream_id: int) -> Iterator[StreamFrame]:
         return filter(lambda f: f.stream_id == stream_id, self.received_stream_frames_reversed)
+
+    def sent_stream_frames_of_stream_reversed(self, stream_id: int) -> Iterator[StreamFrame]:
+        return filter(lambda f: f.stream_id == stream_id, self.sent_stream_frames_reversed)
 
     def stream_flow_limit_sum_updates(self) -> Iterator[tuple[float, int]]:
         """sum of all stream flow limits"""
@@ -260,7 +377,7 @@ class Connection:
     @property
     def max_time(self) -> float:
         """time in ms"""
-        return self.raw_events[-1]["time"]
+        return self.last_event.time
 
     @property
     def congestion_window_updates(self) -> Iterator[tuple[float, int]]:
@@ -270,6 +387,41 @@ class Connection:
             congestion_window = metrics_updated.congestion_window
             if congestion_window is not None:
                 yield event.time, congestion_window
+
+    @property
+    def avg_rtt(self) -> timedelta:
+        rtt_sum = 0
+        update_count = 0
+        for event in self.events_of_type(event_names.RECOVERY_METRICS_UPDATED):
+            metrics_updated = MetricsUpdated(event)
+            rtt = metrics_updated.latest_rtt
+            if rtt is not None:
+                update_count += 1
+                rtt_sum += rtt
+        return timedelta(milliseconds=rtt_sum/update_count)
+
+    @property
+    def max_rtt(self) -> timedelta:
+        max = 0
+        for event in self.events_of_type(event_names.RECOVERY_METRICS_UPDATED):
+            metrics_updated = MetricsUpdated(event)
+            rtt = metrics_updated.latest_rtt
+            if rtt is not None and rtt > max:
+                max = rtt
+        return timedelta(milliseconds=max)
+
+    @property
+    def min_rtt(self) -> Optional[timedelta]:
+        min = math.inf
+        for event in self._fast_events_of_type(event_names.RECOVERY_METRICS_UPDATED):
+            metrics_updated = MetricsUpdated(event)
+            rtt = metrics_updated.min_rtt
+            if rtt is not None and rtt > 0 and rtt < min:
+                min = rtt
+        if min == math.inf:
+            return None
+        return timedelta(milliseconds=min)
+
 
     @property
     def rtt_updates(self) -> Iterator[tuple[float, float]]:
@@ -320,7 +472,7 @@ class Connection:
         duration = stop_time - start_time
         max_stream_data = sum(map(lambda x: x.raw_length, self.received_xse_records(stream_id))) * 8  # in bits
         return max_stream_data / duration
-    
+
     def avg_xse_stream_receive_rate(self, stream_id) -> float:
         """in bits per second"""
         """only the payload of the XSE-QUIC records"""
@@ -329,3 +481,266 @@ class Connection:
         duration = stop_time - start_time
         max_stream_data = sum(map(lambda x: x.data_length, self.received_xse_records(stream_id))) * 8  # in bits
         return max_stream_data / duration
+
+    def get_file_reader(self) -> IO:
+        return self.file_reader
+
+    @property
+    @property_memory_cache
+    @autocache
+    def path_update_file_offsets(self) -> list[int]:
+        offsets = []
+        for offset in self.event_line_offsets:
+            event = self.event_from_file_offset(offset)
+            if event.name == event_names.TRANSPORT_PATH_UPDATED:
+                offsets.append(offset)
+        return offsets
+
+    @property
+    def path_updates(self) -> Iterator[TransportPathUpdatedEvent]:
+        for offset in self.path_update_file_offsets:
+            yield TransportPathUpdatedEvent(self.event_from_file_offset(offset))
+
+    def received_datagram_frames(self) -> Iterator[DatagramFrame]:
+        for received_frame in self.received_frames_of_type(frame_types.DATAGRAM):
+            yield DatagramFrame(received_frame)
+
+    def _fast_received_datagram_frames(self) -> Iterator[DatagramFrameIterator]:
+        for received_frame in self._fast_received_frames_of_type(frame_types.DATAGRAM):
+            yield DatagramFrameIterator(received_frame)
+
+    def sent_datagram_frames(self) -> Iterator[DatagramFrame]:
+        for sent_frame in self.sent_frames_of_type(frame_types.DATAGRAM):
+            yield DatagramFrame(sent_frame)
+
+    def readline_from_offset(self, file_offset: int) -> str:
+        r = self.get_file_reader()
+        r.seek(file_offset)
+        return r.readline()
+
+    def event_from_file_offset(self, file_offset: int) -> Event:
+        r = self.get_file_reader()
+        r.seek(file_offset)
+        line = r.readline()
+        try:
+            return Event(json.loads(line), self, file_offset=file_offset)
+        except ujson.JSONDecodeError:
+            raise Exception(f'failed to parse json: {line}')
+
+    def _fast_event_from_file_offset(self, file_offset: int) -> EventIterator:
+        """event is temporary iterator"""
+        r = self.get_file_reader()
+        r.seek(file_offset)
+        line = r.readline()
+        try:
+            return EventIterator(self.json_parser.parse(line), self, file_offset=file_offset)
+        except Exception:
+            raise Exception(f'failed to parse json: {line}')
+
+    @property
+    @property_memory_cache
+    @autocache
+    def event_line_offsets(self) -> list[int]:
+        offsets = []
+        r = self.get_file_reader()
+        r.seek(0)
+        r.readline()  # skip header
+        offset = r.tell()
+        line = r.readline()
+        while line:
+            if line.startswith(b'{') and line.endswith(b'}\n'):  # if json
+                offsets.append(offset)
+            offset = r.tell()
+            line = r.readline()
+        return offsets
+
+    @property
+    def events(self) -> Iterator[Event]:
+        for offset in self.event_line_offsets:
+            yield self.event_from_file_offset(offset)
+
+    @property
+    def _fast_events(self) -> Iterator[EventIterator]:
+        for offset in self.event_line_offsets:
+            yield self._fast_event_from_file_offset(offset)
+
+    # @property
+    # @property_memory_cache
+    # def events_list(self) -> Iterator[Event]:
+    #     return list(map(self.event_from_file_offset, self.event_line_offsets))
+
+    @property
+    def first_event(self) -> Optional[Event]:
+        r = self.get_file_reader()
+        r.seek(0)
+        r.readline()  # skip header
+        line = r.readline()
+        while line:
+            # TODO check if valid
+            return Event(json.loads(line), self, r.tell())
+            line = r.readline()
+        return None
+
+    def first_event_of_type(self, name: str) -> Optional[Event]:
+        event_iterator = next(self._fast_events_of_type(name), None)
+        if event_iterator is None:
+            return None
+        return event_iterator.to_event()
+
+    @property
+    def last_event(self) -> Optional[Event]:
+        last_offset = self.event_line_offsets[-1]
+        return self.event_from_file_offset(last_offset)
+
+    @property
+    @property_memory_cache
+    @autocache
+    @print_func_time
+    def get_ack_and_loss_file_offsets(self) -> tuple[dict[PacketOffset, AckOffset], dict[PacketOffset, LostOffset]]:
+        acks: dict[PacketOffset, AckOffset] = {}
+        pending: dict[PacketNumber, PacketOffset] = {}
+        loss: dict[PacketOffset, LostOffset] = {}
+
+        for event in self.events2:
+            if event.name == event_names.TRANSPORT_PACKET_SENT:
+                packet = Packet(event)
+                pending[packet.packet_number] = packet.event.file_offset
+            elif event.name == event_names.TRANSPORT_PACKET_RECEIVED:
+                packet = Packet(event)
+                for frame in packet.frames:
+                    if frame.type == frame_types.ACK:
+                        ack = AckFrame(frame)
+                        for packet_number in list(pending):
+                            if packet_number in ack.acked_packet_numbers:
+                                packet_offset = pending[packet_number]
+                                del pending[packet_number]
+                                acks[packet_offset] = ack.packet.event.file_offset
+            elif event.name == event_names.RECOVERY_PACKET_LOST:
+                lost = RecoveryPacketLostEvent(event)
+                if lost.packet_number in pending:
+                    packet_offset = pending[lost.packet_number]
+                    del pending[lost.packet_number]
+                    loss[packet_offset] = lost.base.file_offset
+        print(f'{len(acks)} acked received packets')
+        print(f'{len(pending)} pending received packets')
+        print(f'{len(loss)} loss received packets')
+        return acks, loss
+
+    def get_first_ack_of_packet(self, packet: Packet) -> AckFrame | None:
+        acks, loss = self.get_ack_and_loss_file_offsets()
+        if packet.event.file_offset in acks:
+            packet = Packet(self.event_from_file_offset(acks[packet.event.file_offset]))
+            for frame in packet.frames_of_type(frame_types.ACK):
+                ack_frame = AckFrame(frame)
+                if packet.packet_number in ack_frame.acked_packet_numbers:
+                    return ack_frame
+        return None
+
+    @property
+    def reference_time(self) -> float:
+        return self.qlog_info['trace']['common_fields']['reference_time']
+
+    @property
+    def reference_time_as_datetime(self) -> datetime:
+        return datetime.fromtimestamp(self.reference_time / 1000)
+
+    def align_time_to(self, conn: Self):
+        own_time = self.qlog_info['trace']['common_fields']['reference_time']
+        other_time = conn.qlog_info['trace']['common_fields']['reference_time']
+        self.shift_ms = own_time - other_time
+
+    def set_zero_time(self, time: datetime):
+        own_time = self.qlog_info['trace']['common_fields']['reference_time']
+        other_time = time.timestamp() * 1000
+        self.shift_ms = own_time - other_time
+
+    @property
+    def total_received_datagram_payload(self) -> int:
+        return sum(
+            map(lambda d: d.length,
+                map(lambda f: DatagramFrame(f),
+                    self.received_frames_of_type(frame_types.DATAGRAM))))
+
+    @property
+    def total_sent_datagram_payload(self) -> int:
+        return sum(
+            map(lambda d: d.length,
+                map(lambda f: DatagramFrame(f),
+                    self.sent_frames_of_type(frame_types.DATAGRAM))))
+
+    def total_sent_stream_payload(self, stream_id: int) -> int:
+        try:
+            frame = next(self.sent_stream_frames_of_stream_reversed(stream_id))
+            return frame.offset + frame.length
+        except StopIteration:
+            return 0
+
+    def total_received_stream_payload(self, stream_id: int) -> int:
+        try:
+            frame = next(self.received_stream_frames_of_stream_reversed(stream_id))
+            return frame.offset + frame.length
+        except StopIteration:
+            return 0
+
+    @property
+    def start_time(self) -> timedelta:
+        return self.first_event.time_as_timedelta
+
+    @property
+    def end_time(self) -> timedelta:
+        return self.last_event.time_as_timedelta
+
+    @property
+    def duration(self) -> timedelta:
+        return self.end_time - self.start_time
+
+    @property
+    def ingress_datagram_goodput(self) -> float:
+        """in Mbps"""
+        return self.total_received_datagram_payload * 8 / 1E6 / self.duration.total_seconds()
+
+    @property
+    def handshake_completed_time_as_timedelta(self) -> Optional[timedelta]:
+        for event in self.events_of_type(event_names.SECURITY_KEY_UPDATED):
+            key_type = event.data.get('key_type')
+            if key_type is None:
+                continue
+            if key_type == 'server_1rtt_secret' or key_type == 'client_1rtt_secret':
+                return event.time_as_timedelta
+        return None
+
+    @property
+    def handshake_confirmed_time_as_timedelta(self) -> Optional[timedelta]:
+        if self.is_client:
+            frame = next(self.received_frames_of_type(frame_types.HANDSHAKE_DONE))
+            if frame is None:
+                return None
+            return frame.time_as_timedelta
+        else:
+            self.handshake_completed_time_as_timedelta
+
+
+    def ingress_datagram_goodput_chunked(self, chunk_delta: Optional[timedelta]) -> list[(timedelta, float)]:
+        d = pd.DataFrame(
+            [(f.time_as_timedelta, DatagramFrame(f).length) for f in self._fast_received_frames_of_type(frame_types.DATAGRAM)],
+            columns=['time', 'length']
+        )
+        if chunk_delta is not None:
+            d['group'] = d['time'].apply(lambda t: math.floor(t / chunk_delta))
+            d = d.groupby('group').agg(
+                min_time=('time', min),
+                sum_length=('length', sum)
+            )
+            d = d.reset_index(drop=True)
+        d = list(d.itertuples(index=False, name=None))
+        return d
+
+    def chunks(self, chunk_delta: timedelta) -> Iterator[Connection]:
+        chunk_start = chunk_delta * math.floor(self.start_time / chunk_delta)
+        chunk_end = chunk_start + chunk_delta
+        while chunk_start < self.end_time:
+            c = self.copy()
+            c.cut(start=chunk_start, end=chunk_end)
+            yield c
+            chunk_start = chunk_end
+            chunk_end += chunk_delta
