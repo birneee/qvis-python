@@ -1,13 +1,18 @@
+from __future__ import annotations
 from datetime import timedelta
+from typing import Generic, TYPE_CHECKING
 
-from qvis.ranges import Ranges
+from qvis.event import T_DICT
+
+if TYPE_CHECKING:
+    from qvis.packet import Packet
 
 
-class Frame(object):
-    inner: dict
-    packet: 'packet.Packet'
+class Frame(Generic[T_DICT]):
+    inner: T_DICT
+    packet: Packet[T_DICT]
 
-    def __init__(self, inner: dict, packet: 'packet.Packet'):
+    def __init__(self, inner: T_DICT, packet: Packet[T_DICT]):
         self.inner = inner
         self.packet = packet
 
@@ -24,49 +29,5 @@ class Frame(object):
     def time_as_timedelta(self) -> timedelta:
         return self.packet.time_as_timedelta
 
-
-class AckFrame(Frame):
-    base: Frame
-
-    def __init__(self, base: Frame):
-        super().__init__(base.inner, base.packet)
-        self.base = base
-
-    @property
-    def acked_packet_numbers(self) -> Ranges:
-        return Ranges(self.base.inner.get("acked_ranges"))
-
-
-class MaxStreamDataFrame:
-    base: Frame
-
-    def __init__(self, base: Frame):
-        self.base = base
-
-    @property
-    def stream_id(self) -> int:
-        return self.base.inner.get('stream_id')
-
-    @property
-    def maximum(self) -> int:
-        return self.base.inner.get('maximum')
-
-
-class StreamFrame(Frame):
-    base: Frame
-
-    def __init__(self, base: Frame):
-        super().__init__(base.inner, base.packet)
-        self.base = base
-
-    @property
-    def stream_id(self) -> int:
-        return self.base.inner.get('stream_id')
-
-    @property
-    def offset(self) -> int:
-        return self.base.inner.get('offset')
-
-    @property
-    def length(self) -> int:
-        return self.base.inner.get('length')
+    def __getitem__(self, item):
+        return self.inner[item]

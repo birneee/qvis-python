@@ -2,31 +2,28 @@ from __future__ import annotations
 
 import datetime
 import gzip
+import os
 import math
 import pathlib
 import time
 from datetime import timedelta, datetime
 from pathlib import Path
-from typing import Iterator, Optional, TextIO, IO
+from typing import Iterator, Optional, TextIO, BinaryIO
 
 import pandas as pd
-from cysimdjson import cysimdjson
+import simdjson
 from typing_extensions import Self
-
-import ujson
-import ujson as json
 
 from . import event_names, frame_types
 from .cache import Cache, autocache
-from .event_iterator import EventIterator
-from .frame_iterator import FrameIterator
-from .frames.datagram_frame_iterator import DatagramFrameIterator
-from .packet_iterator import PacketIterator
+from .frames.ack_frame import AckFrame
+from .frames.max_stream_data_frame import MaxStreamDataFrame
+from .frames.stream_frame import StreamFrame
 from .property_memory_cache import PropertyMemoryCache
 from .event import Event, XseRecord
 from .events.recovery_packet_lost_event import RecoveryPacketLostEvent
 from .events.transport_path_updated_event import TransportPathUpdatedEvent
-from .frame import Frame, MaxStreamDataFrame, StreamFrame, AckFrame
+from .frame import Frame
 from .frames.datagram_frame import DatagramFrame
 from .property_memory_cache import property_memory_cache
 from .packet import Packet
@@ -50,6 +47,7 @@ def read_qlog(filepath: str | pathlib.Path) -> Connection:
     print(f'loaded {filepath} in {time.time() - start}s')
     return conn
 
+
 # TODO rename
 def parse_qlog(reader: TextIO) -> Connection:
     conn = Connection(
@@ -59,23 +57,21 @@ def parse_qlog(reader: TextIO) -> Connection:
     return conn
 
 
-
 class Connection:
     """A QLOG QUIC Connection"""
-    file_reader: TextIO
-    json_parser: cysimdjson.JSONParser
+    file_reader: BinaryIO
+    json_parser: simdjson.Parser
     __cache__: Cache
     __property_memory_cache__: PropertyMemoryCache
     shift_ms: float
     min_ms: float
     max_ms: float
 
-
-    def __init__(self, cache: Cache, file_reader: TextIO, shift_ms: float = 0, min_ms: float = -math.inf, max_ms: float = math.inf):
+    def __init__(self, cache: Cache, file_reader: BinaryIO, shift_ms: float = 0, min_ms: float = -math.inf, max_ms: float = math.inf):
         self.__cache__ = cache
         self.__property_memory_cache__ = PropertyMemoryCache()
         self.file_reader = file_reader
-        self.json_parser = cysimdjson.JSONParser()
+        self.json_parser = simdjson.Parser(late_reuse_check=True)  # requires a fork: https://github.com/birneee/pysimdjson/tree/late_reuse_check
         self.shift_ms = shift_ms
         self.min_ms = min_ms
         self.max_ms = max_ms
@@ -100,12 +96,12 @@ class Connection:
 
     @property
     def qlog_info(self) -> dict:
-        r = self.get_file_reader()
+        r = self.file_reader
         r.seek(0)
         line = r.readline()
         try:
-            return json.loads(line)
-        except ujson.JSONDecodeError:
+            return simdjson.loads(line)
+        except Exception:
             raise Exception(f'failed to parse: {line}')
 
     @property
@@ -116,23 +112,19 @@ class Connection:
     def is_client(self) -> bool:
         return self.qlog_info['trace']['vantage_point']['type'] == 'client'
 
-    def events_of_type(self, name: str) -> Iterator[Event]:
+    def events_of_type(self, name: str) -> Iterator[Event[simdjson.Object]]:
         return filter(lambda e: e.name == name, self.events)
-
-    def _fast_events_of_type(self, name: str) -> Iterator[EventIterator]:
-        return filter(lambda e: e.name == name, self._fast_events)
 
     def received_xse_records(self, stream_id: int) -> Iterator[XseRecord]:
         return filter(lambda x: x.stream_id == stream_id,
                       map(lambda e: XseRecord(e),
                           self.events_of_type(event_names.TRANSPORT_XSE_RECORD_RECEIVED)))
 
-
-
     @property
     def sent_packets(self) -> Iterator[Packet]:
         for offset in self.sent_packet_file_offsets:
-            yield Packet(self.event_from_file_offset(offset))
+            packet = Packet(self.event_from_file_offset(offset))
+            yield packet
 
     @property
     @property_memory_cache
@@ -151,26 +143,15 @@ class Connection:
     def received_packet_file_offsets(self) -> list[int]:
         offsets = []
         for offset in self.event_line_offsets:
-            event = self._fast_event_from_file_offset(offset)
+            event = self.event_from_file_offset(offset)
             if event.name == event_names.TRANSPORT_PACKET_RECEIVED:
                 offsets.append(offset)
         return offsets
-
 
     @property
     def received_packets(self) -> Iterator[Packet]:
         for offset in self.received_packet_file_offsets:
             p = Packet(self.event_from_file_offset(offset))
-            if self.min_ms > -math.inf and p.time < self.min_ms:
-                 continue
-            if self.max_ms < math.inf and p.time > self.max_ms:
-                 continue
-            yield p
-
-    @property
-    def _fast_received_packets(self) -> Iterator[PacketIterator]:
-        for offset in self.received_packet_file_offsets:
-            p = PacketIterator(self._fast_event_from_file_offset(offset))
             if self.min_ms > -math.inf and p.time < self.min_ms:
                  continue
             if self.max_ms < math.inf and p.time > self.max_ms:
@@ -214,41 +195,30 @@ class Connection:
         return filter(lambda f: f.stream_id == stream_id, self.sent_stream_frames)
 
     @property
-    def received_frames(self) -> Iterator[Frame]:
+    def received_frames(self) -> Iterator[Frame[simdjson.Object]]:
         for packet in self.received_packets:
             for frame in packet.frames:
                 yield frame
 
     @property
-    def _fast_received_frames(self) -> Iterator[FrameIterator]:
-        for packet in self._fast_received_packets:
-            for frame in packet.frames:
-                yield frame
-
-    @property
-    def received_frames_reversed(self) -> Iterator[Frame]:
+    def received_frames_reversed(self) -> Iterator[Frame[simdjson.Object]]:
         for packet in self.received_packets_reversed:
             for frame in packet.frames:
                 yield frame
 
     @property
-    def sent_frames_reversed(self) -> Iterator[Frame]:
+    def sent_frames_reversed(self) -> Iterator[Frame[simdjson.Object]]:
         for packet in self.sent_packets_reversed:
             for frame in packet.frames:
                 yield frame
 
-
-    def received_frames_of_type(self, frame_type: str) -> Iterator[Frame]:
+    def received_frames_of_type(self, frame_type: str) -> Iterator[Frame[simdjson.Object]]:
         return filter(lambda f: f.type == frame_type, self.received_frames)
 
-    def _fast_received_frames_of_type(self, frame_type: str) -> Iterator[FrameIterator]:
-        """frame is temporary iterator"""
-        return filter(lambda f: f.type == frame_type, self._fast_received_frames)
-
-    def received_frames_of_type_reversed(self, frame_type: str) -> Iterator[Frame]:
+    def received_frames_of_type_reversed(self, frame_type: str) -> Iterator[Frame[simdjson.Object]]:
         return filter(lambda f: f.type == frame_type, self.received_frames_reversed)
 
-    def sent_frames_of_type_reversed(self, frame_type: str) -> Iterator[Frame]:
+    def sent_frames_of_type_reversed(self, frame_type: str) -> Iterator[Frame[simdjson.Object]]:
         return filter(lambda f: f.type == frame_type, self.sent_frames_reversed)
 
     @property
@@ -438,9 +408,6 @@ class Connection:
             if frame.length > 0:
                 return frame.time
 
-    def sent_packet_by_number(self, packet_number: int) -> Packet:
-        return Packet(Event(self.raw_events[self.sent_packet_numbers[packet_number]]))
-
     def highest_acked_stream_updates(self, stream_id) -> Iterator[AckFrame, StreamFrame]:
         """received acks"""
         for ack_frame in self.received_frames_of_type(frame_types.ACK):
@@ -482,9 +449,6 @@ class Connection:
         max_stream_data = sum(map(lambda x: x.data_length, self.received_xse_records(stream_id))) * 8  # in bits
         return max_stream_data / duration
 
-    def get_file_reader(self) -> IO:
-        return self.file_reader
-
     @property
     @property_memory_cache
     @autocache
@@ -501,91 +465,84 @@ class Connection:
         for offset in self.path_update_file_offsets:
             yield TransportPathUpdatedEvent(self.event_from_file_offset(offset))
 
-    def received_datagram_frames(self) -> Iterator[DatagramFrame]:
+    def received_datagram_frames(self) -> Iterator[DatagramFrame[simdjson.Object]]:
         for received_frame in self.received_frames_of_type(frame_types.DATAGRAM):
             yield DatagramFrame(received_frame)
-
-    def _fast_received_datagram_frames(self) -> Iterator[DatagramFrameIterator]:
-        for received_frame in self._fast_received_frames_of_type(frame_types.DATAGRAM):
-            yield DatagramFrameIterator(received_frame)
 
     def sent_datagram_frames(self) -> Iterator[DatagramFrame]:
         for sent_frame in self.sent_frames_of_type(frame_types.DATAGRAM):
             yield DatagramFrame(sent_frame)
 
     def readline_from_offset(self, file_offset: int) -> str:
-        r = self.get_file_reader()
+        r = self.file_reader
         r.seek(file_offset)
         return r.readline()
 
-    def event_from_file_offset(self, file_offset: int) -> Event:
-        r = self.get_file_reader()
-        r.seek(file_offset)
-        line = r.readline()
-        try:
-            return Event(json.loads(line), self, file_offset=file_offset)
-        except ujson.JSONDecodeError:
-            raise Exception(f'failed to parse json: {line}')
+    def event_from_line(self, line: bytes, file_offset: int) -> Event[simdjson.Object]:
+        if hasattr(self, 'current_event'):
+            del self.current_event.inner
+        self.current_event = Event[simdjson.Object](self.json_parser.parse(line), self, file_offset)
+        return self.current_event
 
-    def _fast_event_from_file_offset(self, file_offset: int) -> EventIterator:
+    def event_from_file_offset(self, file_offset: int) -> Event[simdjson.Object]:
         """event is temporary iterator"""
-        r = self.get_file_reader()
+        r = self.file_reader
         r.seek(file_offset)
         line = r.readline()
         try:
-            return EventIterator(self.json_parser.parse(line), self, file_offset=file_offset)
+            return self.event_from_line(line, file_offset)
         except Exception:
             raise Exception(f'failed to parse json: {line}')
+
+    def iterate_json_lines(self) -> Iterator[(int,str)]:
+        """iterate over tuple of offset and line string"""
+        r = self.file_reader
+        r.seek(0)
+        offset = r.tell()
+        line = r.readline()
+        while line:
+            if line.startswith(b'{') and line.endswith(b'}\n'):  # if json
+                yield offset, line
+            offset = r.tell()
+            line = r.readline()
 
     @property
     @property_memory_cache
     @autocache
     def event_line_offsets(self) -> list[int]:
+        iter = self.iterate_json_lines()
+        next(iter) # skip header
         offsets = []
-        r = self.get_file_reader()
-        r.seek(0)
-        r.readline()  # skip header
-        offset = r.tell()
-        line = r.readline()
-        while line:
-            if line.startswith(b'{') and line.endswith(b'}\n'):  # if json
-                offsets.append(offset)
-            offset = r.tell()
-            line = r.readline()
+        for offset, _ in iter:
+            offsets.append(offset)
         return offsets
 
     @property
-    def events(self) -> Iterator[Event]:
-        for offset in self.event_line_offsets:
-            yield self.event_from_file_offset(offset)
+    def events(self) -> Iterator[Event[simdjson.Object]]:
+        if os.environ.get('NOCACHE') == '1':
+            iter = self.iterate_json_lines()
+            next(iter)  # skip header
+            for offset, line in iter:
+                yield self.event_from_line(line, offset)
+        else:
+            for offset in self.event_line_offsets:
+                yield self.event_from_file_offset(offset)
 
     @property
-    def _fast_events(self) -> Iterator[EventIterator]:
-        for offset in self.event_line_offsets:
-            yield self._fast_event_from_file_offset(offset)
-
-    # @property
-    # @property_memory_cache
-    # def events_list(self) -> Iterator[Event]:
-    #     return list(map(self.event_from_file_offset, self.event_line_offsets))
-
-    @property
-    def first_event(self) -> Optional[Event]:
-        r = self.get_file_reader()
-        r.seek(0)
-        r.readline()  # skip header
-        line = r.readline()
-        while line:
-            # TODO check if valid
-            return Event(json.loads(line), self, r.tell())
-            line = r.readline()
-        return None
-
-    def first_event_of_type(self, name: str) -> Optional[Event]:
-        event_iterator = next(self._fast_events_of_type(name), None)
-        if event_iterator is None:
+    def first_event(self) -> Optional[Event[simdjson.Object]]:
+        iter = self.iterate_json_lines()
+        try:
+            next(iter)  # skip header
+            offset, line = next(iter)
+            return self.event_from_line(line, offset)
+        except StopIteration:
             return None
-        return event_iterator.to_event()
+
+    def first_event_of_type(self, name: str) -> Optional[Event[simdjson.Object]]:
+        event = next(self.events_of_type(name), None)
+        if event is None:
+            return None
+        return event
 
     @property
     def last_event(self) -> Optional[Event]:
@@ -627,7 +584,7 @@ class Connection:
         return acks, loss
 
     def get_first_ack_of_packet(self, packet: Packet) -> AckFrame | None:
-        acks, loss = self.get_ack_and_loss_file_offsets()
+        acks, loss = self.get_ack_and_loss_file_offsets
         if packet.event.file_offset in acks:
             packet = Packet(self.event_from_file_offset(acks[packet.event.file_offset]))
             for frame in packet.frames_of_type(frame_types.ACK):

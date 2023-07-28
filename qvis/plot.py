@@ -4,12 +4,13 @@ from typing import Iterator, Optional, TypeVar, Callable, Iterable
 
 import matplotlib.transforms as transforms
 import numpy as np
+import matplotlib as plt
 from matplotlib.axes import Axes
 from matplotlib.ticker import FuncFormatter
 
 from .connection import Connection
-from .frame import StreamFrame, AckFrame
 from .frames.datagram_frame import DatagramFrame
+from .frames.stream_frame import StreamFrame
 from .utils.iterator import window
 from datetime import timedelta
 
@@ -361,13 +362,24 @@ def plot_path_updates(ax: Axes, conn: Connection, label: str = "Path updates", l
         ax.text(path_update.time_as_timedelta.total_seconds(), 1.01, f'{path_update.dst_ip}:{path_update.dst_port}',
                 transform=ax.get_xaxis_text1_transform(0)[0], ha='center')
 
+
 @print_func_time
 def plot_vline_with_label(ax: Axes, time: timedelta, label: str, linestyle: str | None = 'dashed',
-                      color: str | None = "black", y: float = 1.01, ha: str = 'left', rotation: float = 70):
-    ax.axvline(time.total_seconds(), label=None, linestyle=linestyle,
-               color=color)
-    ax.text(time.total_seconds(), y, label,
-            transform=ax.get_xaxis_text1_transform(0)[0], ha=ha, rotation=rotation)
+                      color: str | None = "black", y: float = 1.01, ha: str = 'left', va: str = 'top', rotation: float = 70, label_prefix: str = ' '):
+    transform = plt.transforms.blended_transform_factory(ax.transData, ax.transAxes)
+    ax.vlines(time.total_seconds(), ymin=0, ymax=y, color=color, transform=transform, clip_on=False, linestyle=linestyle)
+    ax.text(time.total_seconds(), y, ' ' + label,
+            transform=transform, ha=ha, va=va, rotation=rotation)
+
+
+@print_func_time
+def plot_vlines_with_labels(ax: Axes, xs: list[float], labels: list[str], linestyle: Optional[str] = 'dashed', color: Optional[str] = 'black', y_step: float = 0, y: float = 1, ha: str = 'left', rotation: float = 0, label_prefix: str = ' '):
+    xs_with_labels = list(zip(xs, labels))
+    if ha == 'left':
+        xs_with_labels.sort(key=lambda e: e[0], reverse=True)
+    for i, (x, label) in enumerate(xs_with_labels):
+        plot_vline_with_label(ax, x, label, y=y+i*y_step, linestyle=linestyle, color=color, ha=ha, rotation=rotation, label_prefix=label_prefix)
+
 
 @print_func_time
 def plot_datagram_data_received(ax: Axes, conn: Connection, color: str | None = None,

@@ -57,6 +57,27 @@ class Ranges:
             return
         raise "invalid type"
 
+    def add(self, _range: list[int] | range):
+        if isinstance(_range, list):
+            if len(_range) == 1:
+                return self.add(range(_range[0], _range[0] + 1))
+            else:
+                return self.add(range(_range[0], _range[1] + 1))
+        else:
+            index = bisect.bisect(self.inner, _range.start, key=lambda r: r.start)
+            if index - 1 >= 0:
+                previous = self.inner[index-1]
+                if previous.stop >= _range.start:
+                    _range = range(previous.start, max(previous.stop, _range.stop))
+                    del self.inner[index-1]
+                    index -= 1
+            if index < len(self.inner):
+                next = self.inner[index]
+                if _range.stop >= next.start:
+                    _range = range(_range.start, max(_range.stop, next.stop))
+                    del self.inner[index]
+            self.inner.insert(index, _range)
+
     def containing_range(self, elem: int) -> tuple[int, range] | tuple[None, None]:
         for index, _range in enumerate(self.inner):
             if elem < _range.start:

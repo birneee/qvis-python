@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta, datetime
-from typing import Optional, Iterator, TYPE_CHECKING
+import simdjson
+from typing import Optional, Iterator, TYPE_CHECKING, TypeVar, Generic
 
 if TYPE_CHECKING:
     from qvis.connection import Connection
 
+T_DICT = TypeVar('T_DICT', simdjson.Object, dict)
 
-class Event:
-    inner: dict
+
+class Event(Generic[T_DICT]):
+    inner: T_DICT
     conn: Connection
     file_offset: int
 
-    def __init__(self, inner: dict, conn: Connection, file_offset):
-        if not 'time' in inner:
+    def __init__(self, inner: T_DICT, conn: Connection, file_offset):
+        if 'time' not in inner:
             raise f'"{inner}" is not an event'
         self.inner = inner
         self.conn = conn
@@ -36,7 +39,7 @@ class Event:
     @property
     def time(self) -> float:
         """in ms"""
-        return self.inner['time']+self.conn.shift_ms
+        return self.inner['time'] + self.conn.shift_ms
 
     @property
     def name(self) -> str:
@@ -44,7 +47,7 @@ class Event:
         return self.inner['name']
 
     @property
-    def data(self) -> Optional[dict]:
+    def data(self) -> Optional[T_DICT]:
         """event specific data"""
         return self.inner.get('data')
 
@@ -61,8 +64,12 @@ class Event:
             r.seek(current_offset)
             line = r.readline()
 
-    def subsequent_events_of_type(self, type_name: str) -> Iterator[Event]:
+    def subsequent_events_of_type(self, type_name: str) -> Iterator[Event[T_DICT]]:
         return filter(lambda e: e.name == type_name, self.subsequent_events())
+
+    def to_event(self) -> Event[dict]:
+        """convert temporary Event[JSONObject] to copy Event[dict]"""
+        return self.conn.event_from_file_offset(self.file_offset)
 
 
 class XseRecord:
