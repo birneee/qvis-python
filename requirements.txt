@@ -1,11 +1,5 @@
-aiofiles==23.1.0
-cysimdjson==21.11
+git+https://github.com/birneee/pysimdjson.git
 matplotlib==3.7.1
-msgpack_python==0.5.6
-numpy==1.24.3
 pandas==2.0.2
-pathos==0.3.0
-pylines==0.0.4
-setuptools==67.7.0
 typing_extensions==4.6.3
-ujson==5.8.0
+pyqt5==5.15.9
