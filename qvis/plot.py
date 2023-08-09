@@ -14,7 +14,7 @@ from .frames.stream_frame import StreamFrame
 from .utils.iterator import window
 from datetime import timedelta
 
-from .utils.time import print_func_time
+from .utils.time_utils import print_func_time
 
 
 def byte_axis_formatter(bytes: int, position: int) -> str:
@@ -365,20 +365,21 @@ def plot_path_updates(ax: Axes, conn: Connection, label: str = "Path updates", l
 
 @print_func_time
 def plot_vline_with_label(ax: Axes, time: timedelta, label: str, linestyle: str | None = 'dashed',
-                      color: str | None = "black", y: float = 1.01, ha: str = 'left', va: str = 'top', rotation: float = 70, label_prefix: str = ' '):
+                      color: str | None = "black", y: float = 1.01, ha: str = 'left', va: str = 'top', rotation: float = 70):
     transform = plt.transforms.blended_transform_factory(ax.transData, ax.transAxes)
     ax.vlines(time.total_seconds(), ymin=0, ymax=y, color=color, transform=transform, clip_on=False, linestyle=linestyle)
-    ax.text(time.total_seconds(), y, ' ' + label,
-            transform=transform, ha=ha, va=va, rotation=rotation)
+    text_transform = transform + transforms.ScaledTranslation(0.05, 0, ax.figure.dpi_scale_trans)
+    ax.text(time.total_seconds(), y, label,
+            transform=text_transform, ha=ha, va=va, rotation=rotation)
 
 
 @print_func_time
-def plot_vlines_with_labels(ax: Axes, xs: list[float], labels: list[str], linestyle: Optional[str] = 'dashed', color: Optional[str] = 'black', y_step: float = 0, y: float = 1, ha: str = 'left', rotation: float = 0, label_prefix: str = ' '):
+def plot_vlines_with_labels(ax: Axes, xs: list[float], labels: list[str], linestyle: Optional[str] = 'dashed', color: Optional[str] = 'black', y_step: float = 0, y: float = 1, ha: str = 'left', rotation: float = 0):
     xs_with_labels = list(zip(xs, labels))
     if ha == 'left':
         xs_with_labels.sort(key=lambda e: e[0], reverse=True)
     for i, (x, label) in enumerate(xs_with_labels):
-        plot_vline_with_label(ax, x, label, y=y+i*y_step, linestyle=linestyle, color=color, ha=ha, rotation=rotation, label_prefix=label_prefix)
+        plot_vline_with_label(ax, x, label, y=y+i*y_step, linestyle=linestyle, color=color, ha=ha, rotation=rotation)
 
 
 @print_func_time

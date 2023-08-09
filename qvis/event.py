@@ -67,9 +67,12 @@ class Event(Generic[T_DICT]):
     def subsequent_events_of_type(self, type_name: str) -> Iterator[Event[T_DICT]]:
         return filter(lambda e: e.name == type_name, self.subsequent_events())
 
-    def to_event(self) -> Event[dict]:
+    def as_dict(self) -> Event[dict]:
         """convert temporary Event[JSONObject] to copy Event[dict]"""
-        return self.conn.event_from_file_offset(self.file_offset)
+        if isinstance(self.inner, simdjson.Object):
+            return Event(self.inner.as_dict(), self.conn, self.file_offset)
+        else:
+            return self.conn.event_from_file_offset(self.file_offset)
 
 
 class XseRecord:

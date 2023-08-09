@@ -1,38 +1,45 @@
 import unittest
-
+import json
 # import cysimdjson.cysimdjson
 # import ujson
 import simdjson
 
+from qvis.utils.time_utils import print_func_time
+
+ITERATIONS = 1_000_000
+QLOG_TEST_DATA = """{"time":13.710729,"name":"transport:packet_sent","data":{"header":{"packet_type":"1RTT","packet_number":536,"key_phase_bit":"1"},"raw":{"length":1252},"frames":[{"frame_type":"stream","stream_id":3,"offset":651567,"length":1227}]}}"""
 JSON_TEST_DATA = """{"glossary":{"title":"example glossary","GlossDiv":{"title":"S","GlossList":{"GlossEntry":{"ID":"SGML","SortAs":"SGML","GlossTerm":"Standard Generalized Markup Language","Acronym":"SGML","Abbrev":"ISO 8879:1986","GlossDef":{"para":"A meta-markup language, used to create markup languages such as DocBook.","GlossSeeAlso":["GML","XML"]},"GlossSee":"markup"}}}}}"""
 JSON_TEST_DATA_2 = """{"glossary":{"title":"another example glossary"}}"""
 
 
 class TestJsonSeq(unittest.TestCase):
 
+    @print_func_time
+    def test_benchmark_json(self):
+        for _ in range(ITERATIONS):
+            j = json.loads(QLOG_TEST_DATA)
+            _ = j['name']
+
+    # @print_func_time
     # def test_benchmark_ujson(self):
-    #     for _ in range(1_000_000):
-    #         json = ujson.loads(JSON_TEST_DATA)
-    #         _ = json['glossary']['title']
+    #     for _ in range(ITERATIONS):
+    #         j = ujson.loads(QLOG_TEST_DATA)
+    #         _ = j['name']
 
-    # def test_benchmark_cysimdjson_singleton(self):
-    #     parser = cysimdjson.cysimdjson.JSONParser()
-    #     for _ in range(1_000_000):
-    #         json = parser.loads(JSON_TEST_DATA)
-    #         _ = json['glossary']['title']
-
+        # @print_func_time
     # def test_benchmark_cysimdjson(self):
-    #     for _ in range(1_000_000):
-    #         parser = cysimdjson.cysimdjson.JSONParser()
-    #         json = parser.loads(JSON_TEST_DATA)
-    #         _ = json['glossary']['title']
+    #     # WARNING: cysimdjson silently reuses memory
+    #     parser = cysimdjson.JSONParser()
+    #     for _ in range(ITERATIONS):
+    #         j = parser.loads(QLOG_TEST_DATA)
+    #         _ = j['name']
 
+    @print_func_time
     def test_benchmark_simdjson(self):
         parser = simdjson.Parser(late_reuse_check=True)
-        for _ in range(1_000_000):
-            json = parser.parse(JSON_TEST_DATA)
-            _ = json['glossary']['title']
-            #del json
+        for _ in range(ITERATIONS):
+            j = parser.parse(QLOG_TEST_DATA)
+            _ = j['name']
 
     # def test_ujson_persistence(self):
     #     json1 = ujson.loads(JSON_TEST_DATA)

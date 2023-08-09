@@ -28,7 +28,7 @@ from .frames.datagram_frame import DatagramFrame
 from .property_memory_cache import property_memory_cache
 from .packet import Packet
 from .recovery import MetricsUpdated
-from .utils.time import print_func_time
+from .utils.time_utils import print_func_time
 
 PacketOffset = int
 AckOffset = int
@@ -511,7 +511,7 @@ class Connection:
     @autocache
     def event_line_offsets(self) -> list[int]:
         iter = self.iterate_json_lines()
-        next(iter) # skip header
+        next(iter, None) # skip header
         offsets = []
         for offset, _ in iter:
             offsets.append(offset)
