@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from typing import Iterator, Generic, TYPE_CHECKING
 
-from . import frame_types
-from .event import Event, T_DICT
+from qvis.event import T_DICT, Event
 
 if TYPE_CHECKING:
-    from .frame import Frame
-    from .frames.stream_frame import StreamFrame
+    from qvis.frame import Frame
+    from qvis.frames.stream_frame import StreamFrame
 
 
 class PacketHeader(Generic[T_DICT]):
@@ -63,7 +62,7 @@ class Packet(Generic[T_DICT]):
 
     @property
     def frames(self) -> Iterator[Frame[T_DICT]]:
-        from .frame import Frame
+        from qvis.frame import Frame
         data = self.event.data
         if data is None:
             return

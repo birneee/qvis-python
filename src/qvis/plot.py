@@ -8,13 +8,13 @@ import matplotlib as plt
 from matplotlib.axes import Axes
 from matplotlib.ticker import FuncFormatter
 
-from .connection import Connection
-from .frames.datagram_frame import DatagramFrame
-from .frames.stream_frame import StreamFrame
-from .utils.iterator import window
+from qvis.connection import Connection
+from qvis.frames.datagram_frame import DatagramFrame
+from qvis.frames.stream_frame import StreamFrame
+from qvis.utils.iterator import window
 from datetime import timedelta
 
-from .utils.time_utils import print_func_time
+from qvis.utils.time_utils import print_func_time
 
 
 def byte_axis_formatter(bytes: int, position: int) -> str:

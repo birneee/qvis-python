@@ -14,21 +14,20 @@ import pandas as pd
 import simdjson
 from typing_extensions import Self
 
-from . import event_names, frame_types
-from .cache import Cache
-from .frames.ack_frame import AckFrame
-from .frames.max_stream_data_frame import MaxStreamDataFrame
-from .frames.stream_frame import StreamFrame
-from .property_memory_cache import PropertyMemoryCache
-from .event import Event, XseRecord
-from .events.recovery_packet_lost_event import RecoveryPacketLostEvent
-from .events.transport_path_updated_event import TransportPathUpdatedEvent
-from .frame import Frame
-from .frames.datagram_frame import DatagramFrame
-from .property_memory_cache import property_memory_cache
-from .packet import Packet
-from .recovery import MetricsUpdated
-from .utils.time_utils import print_func_time
+from qvis import event_names, frame_types
+from qvis.cache import Cache
+from qvis.frames.ack_frame import AckFrame
+from qvis.frames.max_stream_data_frame import MaxStreamDataFrame
+from qvis.frames.stream_frame import StreamFrame
+from qvis.property_memory_cache import PropertyMemoryCache
+from qvis.event import Event, XseRecord
+from qvis.events.recovery_packet_lost_event import RecoveryPacketLostEvent
+from qvis.events.transport_path_updated_event import TransportPathUpdatedEvent
+from qvis.frame import Frame
+from qvis.frames.datagram_frame import DatagramFrame
+from qvis.packet import Packet
+from qvis.recovery import MetricsUpdated
+from qvis.utils.time_utils import print_func_time
 
 PacketOffset = int
 AckOffset = int

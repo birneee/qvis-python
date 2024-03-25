@@ -1,6 +1,6 @@
 from typing import Optional
 
-from .event import Event
+from qvis.event import Event
 
 
 class MetricsUpdated:
