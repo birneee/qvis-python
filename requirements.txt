@@ -1,5 +1,0 @@
-git+https://github.com/birneee/pysimdjson.git
-matplotlib==3.7.1
-pandas==2.0.2
-typing_extensions==4.6.3
-pyqt5==5.15.9

@@ -29,5 +29,9 @@ class Frame(Generic[T_DICT]):
     def time_as_timedelta(self) -> timedelta:
         return self.packet.time_as_timedelta
 
+    @property
+    def time_as_datetime(self) -> datetime:
+        return self.packet.time_as_datetime
+
     def __getitem__(self, item):
         return self.inner[item]

@@ -8,7 +8,7 @@ import ujson
 
 import cysimdjson
 
-from qvis.utils.time_utils import print_func_time
+from src.qvis.utils.time_utils import print_func_time
 import qvis.event
 from qvis.connection import parse_qlog
 

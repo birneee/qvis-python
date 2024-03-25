@@ -15,7 +15,7 @@ import simdjson
 from typing_extensions import Self
 
 from . import event_names, frame_types
-from .cache import Cache, autocache
+from .cache import Cache
 from .frames.ack_frame import AckFrame
 from .frames.max_stream_data_frame import MaxStreamDataFrame
 from .frames.stream_frame import StreamFrame
@@ -127,8 +127,6 @@ class Connection:
             yield packet
 
     @property
-    @property_memory_cache
-    @autocache
     def sent_packet_file_offsets(self) -> list[int]:
         offsets = []
         for offset in self.event_line_offsets:
@@ -138,8 +136,6 @@ class Connection:
         return offsets
 
     @property
-    @property_memory_cache
-    @autocache
     def received_packet_file_offsets(self) -> list[int]:
         offsets = []
         for offset in self.event_line_offsets:
@@ -153,9 +149,9 @@ class Connection:
         for offset in self.received_packet_file_offsets:
             p = Packet(self.event_from_file_offset(offset))
             if self.min_ms > -math.inf and p.time < self.min_ms:
-                 continue
+                continue
             if self.max_ms < math.inf and p.time > self.max_ms:
-                 continue
+                continue
             yield p
 
     @property
@@ -368,7 +364,7 @@ class Connection:
             if rtt is not None:
                 update_count += 1
                 rtt_sum += rtt
-        return timedelta(milliseconds=rtt_sum/update_count)
+        return timedelta(milliseconds=rtt_sum / update_count)
 
     @property
     def max_rtt(self) -> timedelta:
@@ -391,7 +387,6 @@ class Connection:
         if min == math.inf:
             return None
         return timedelta(milliseconds=min)
-
 
     @property
     def rtt_updates(self) -> Iterator[tuple[float, float]]:
@@ -450,8 +445,6 @@ class Connection:
         return max_stream_data / duration
 
     @property
-    @property_memory_cache
-    @autocache
     def path_update_file_offsets(self) -> list[int]:
         offsets = []
         for offset in self.event_line_offsets:
@@ -494,7 +487,7 @@ class Connection:
         except Exception:
             raise Exception(f'failed to parse json: {line}')
 
-    def iterate_json_lines(self) -> Iterator[(int,str)]:
+    def iterate_json_lines(self) -> Iterator[(int, str)]:
         """iterate over tuple of offset and line string"""
         r = self.file_reader
         r.seek(0)
@@ -507,11 +500,9 @@ class Connection:
             line = r.readline()
 
     @property
-    @property_memory_cache
-    @autocache
     def event_line_offsets(self) -> list[int]:
         iter = self.iterate_json_lines()
-        next(iter, None) # skip header
+        next(iter, None)  # skip header
         offsets = []
         for offset, _ in iter:
             offsets.append(offset)
@@ -550,8 +541,6 @@ class Connection:
         return self.event_from_file_offset(last_offset)
 
     @property
-    @property_memory_cache
-    @autocache
     @print_func_time
     def get_ack_and_loss_file_offsets(self) -> tuple[dict[PacketOffset, AckOffset], dict[PacketOffset, LostOffset]]:
         acks: dict[PacketOffset, AckOffset] = {}
@@ -676,7 +665,6 @@ class Connection:
         else:
             self.handshake_completed_time_as_timedelta
 
-
     def ingress_datagram_goodput_chunked(self, chunk_delta: Optional[timedelta]) -> list[(timedelta, float)]:
         d = pd.DataFrame(
             [(f.time_as_timedelta, DatagramFrame(f).length) for f in self._fast_received_frames_of_type(frame_types.DATAGRAM)],
@@ -701,3 +689,9 @@ class Connection:
             yield c
             chunk_start = chunk_end
             chunk_end += chunk_delta
+
+    @property
+    def alpn(self) -> str:
+        """only valid for QUIC QLOGs."""
+        event = self.first_event_of_type('transport:alpn_information')
+        return event.data['chosen_alpn']

@@ -19,13 +19,19 @@ from .utils.time_utils import print_func_time
 
 def byte_axis_formatter(bytes: int, position: int) -> str:
     if bytes > 1000000:
-        return f'{bytes / 1000000:.0f}M'
+        return f'{bytes / 1000000:.0f}\,M'
     if bytes > 1000:
-        return f'{bytes / 1000:.0f}K'
+        return f'{bytes / 1000:.0f}\,K'
     return f'{bytes:.0f}'
 
+def time_axis_formatter(seconds: float, position: int) -> str:
+    if seconds < 1E-3:
+        return fr'{seconds * 1E6:.0f}\,$\upmu$'
+    if seconds < 1:
+        return f'{seconds * 1E3:.0f}\,m'
+    return f'{seconds:.0f}'
 
-QvisTimeAxisFormatter = FuncFormatter(lambda seconds, position: f'{seconds:.0f}')
+QvisTimeAxisFormatter = FuncFormatter(time_axis_formatter)
 QvisByteAxisFormatter = FuncFormatter(byte_axis_formatter)
 
 

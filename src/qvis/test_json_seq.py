@@ -4,7 +4,7 @@ import json
 # import ujson
 import simdjson
 
-from qvis.utils.time_utils import print_func_time
+from src.qvis.utils.time_utils import print_func_time
 
 ITERATIONS = 1_000_000
 QLOG_TEST_DATA = """{"time":13.710729,"name":"transport:packet_sent","data":{"header":{"packet_type":"1RTT","packet_number":536,"key_phase_bit":"1"},"raw":{"length":1252},"frames":[{"frame_type":"stream","stream_id":3,"offset":651567,"length":1227}]}}"""

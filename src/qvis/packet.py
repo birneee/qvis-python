@@ -46,6 +46,10 @@ class Packet(Generic[T_DICT]):
         return self.event.time_as_timedelta
 
     @property
+    def time_as_datetime(self) -> datetime:
+        return self.event.time_as_datetime
+
+    @property
     def header(self) -> PacketHeader[T_DICT]:
         return PacketHeader(self.event.data.get('header'))
 
