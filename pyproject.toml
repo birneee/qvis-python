@@ -3,7 +3,7 @@ name = "qvis"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "pysimdjson@git+https://github.com/birneee/pysimdjson#f023fb181b5ebea53514d02536734b2ceb5ffd0d",
+    "pysimdjson@git+https://github.com/birneee/pysimdjson@e7156f69aed1850182661b64362a58e38a9d4a84",
     "matplotlib>=3.7.1",
     "pandas>=2.0.2",
     "pyqt5>=5.15.9",
