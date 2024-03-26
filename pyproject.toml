@@ -9,3 +9,10 @@ dependencies = [
     "pyqt5>=5.15.9",
     "numpy>=1.22"
 ]
+
+[tool.setuptools]
+py-modules = [
+    "events",
+    "frames",
+    "utils"
+]
